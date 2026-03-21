@@ -1,9 +1,7 @@
 import numpy as np
 from config import (
-    TERRAIN_TO_CLASS,
     NUM_CLASSES,
     PROBABILITY_FLOOR,
-    HIGH_CONFIDENCE,
     STATIC_CONFIDENCE,
     TERRAIN_OCEAN,
     TERRAIN_MOUNTAIN,
@@ -12,14 +10,20 @@ from config import (
     TERRAIN_PORT,
     TERRAIN_RUIN,
     CLASS_EMPTY,
-    CLASS_SETTLEMENT,
-    CLASS_PORT,
-    CLASS_RUIN,
-    CLASS_FOREST,
     CLASS_MOUNTAIN,
 )
 from typing import Optional
 from observation_store import ObservationStore
+
+
+# Maximum probability allowed for any non-static cell class.
+# Even with overwhelming evidence, we cap predictions because ground truth
+# distributions rarely exceed ~75% for any single class in dynamic areas.
+MAX_DYNAMIC_PROB = 0.95
+
+# Minimum probability floor for dynamic cells (higher than PROBABILITY_FLOOR
+# to account for the stochastic nature of the simulation)
+DYNAMIC_FLOOR = 0.02
 
 
 def _compute_settlement_distance_map(initial_grid: np.ndarray) -> np.ndarray:
@@ -81,23 +85,42 @@ def _fill_observed_cells(
     initial_grid: np.ndarray,
     floor: float,
 ):
+    """Fill predictions for observed cells using Dirichlet posterior.
+
+    Key insight: each observation is ONE stochastic simulation result. The ground
+    truth is a probability distribution from hundreds of simulations. With few
+    observations, we need strong priors to avoid overconfidence.
+
+    Prior strength is HIGH when observations are few (spreading the prediction),
+    and LOW when observations are many (trusting the empirical distribution).
+    """
     h, w, _ = prediction.shape
     dist_map = _compute_settlement_distance_map(initial_grid)
 
+    agg_counts = store.aggregated_counts
+    agg_obs = store.aggregated_obs_count
+
     for y in range(h):
         for x in range(w):
-            obs_count = store.get_observation_count(seed_index, x, y)
-            if obs_count == 0:
+            seed_obs_count = store.get_observation_count(seed_index, x, y)
+
+            if agg_counts is not None and agg_obs is not None:
+                total_obs = int(agg_obs[y, x])
+                counts = agg_counts[y, x].copy()
+            else:
+                total_obs = seed_obs_count
+                counts = store.class_counts[seed_index, y, x].copy()
+
+            if total_obs == 0:
                 continue
 
             terrain = initial_grid[y, x]
             if terrain in (TERRAIN_OCEAN, TERRAIN_MOUNTAIN):
                 continue
 
-            counts = store.class_counts[seed_index, y, x]
-
             settlement_dist = dist_map[y, x]
-            prior_strength = _adaptive_prior_strength(settlement_dist, obs_count)
+
+            prior_strength = _adaptive_prior_strength(settlement_dist, total_obs)
             alpha_prior = _terrain_aware_prior(terrain, settlement_dist) * prior_strength
 
             alpha_posterior = alpha_prior + counts
@@ -105,48 +128,38 @@ def _fill_observed_cells(
 
 
 def _adaptive_prior_strength(settlement_dist: float, obs_count: int) -> float:
-    if settlement_dist <= 2:
-        return 0.3
-    elif settlement_dist <= 5:
-        return 0.5
-    elif settlement_dist <= 8:
-        return 1.0
-    else:
-        return 2.0
+    return max(100.0, 1000.0 / (obs_count + 0.5))
 
 
 def _terrain_aware_prior(terrain: int, settlement_dist: float) -> np.ndarray:
-    prior = np.full(NUM_CLASSES, 1.0)
-
-    if terrain == TERRAIN_FOREST:
-        if settlement_dist <= 3:
-            prior[CLASS_FOREST] = 5.0
-            prior[CLASS_SETTLEMENT] = 2.0
-            prior[CLASS_RUIN] = 1.5
-            prior[CLASS_EMPTY] = 2.0
-        else:
-            prior[CLASS_FOREST] = 10.0
-            prior[CLASS_EMPTY] = 1.5
-    elif terrain in (TERRAIN_SETTLEMENT, TERRAIN_PORT):
-        prior[CLASS_SETTLEMENT] = 3.0
-        prior[CLASS_PORT] = 2.0
-        prior[CLASS_RUIN] = 2.0
-        prior[CLASS_EMPTY] = 1.0
-    elif terrain == TERRAIN_RUIN:
-        prior[CLASS_RUIN] = 2.0
-        prior[CLASS_FOREST] = 2.0
-        prior[CLASS_SETTLEMENT] = 1.5
-        prior[CLASS_EMPTY] = 2.0
-    else:
-        if settlement_dist <= 3:
-            prior[CLASS_EMPTY] = 3.0
-            prior[CLASS_SETTLEMENT] = 2.0
-            prior[CLASS_RUIN] = 1.0
-        else:
-            prior[CLASS_EMPTY] = 8.0
-
+    prior = _gt_calibrated_prior(terrain, settlement_dist)
     prior /= prior.sum()
     return prior
+
+
+def _gt_calibrated_prior(terrain: int, settlement_dist: float) -> np.ndarray:
+    """GT-calibrated priors from R13+R15 empirical distributions (10 seeds).
+
+    Class order: [Empty, Settlement, Port, Ruin, Forest, Mountain]
+    """
+    if terrain == TERRAIN_FOREST:
+        if settlement_dist <= 2:
+            return np.array([0.119, 0.166, 0.007, 0.019, 0.689, 0.001])
+        elif settlement_dist <= 5:
+            return np.array([0.064, 0.107, 0.009, 0.013, 0.807, 0.001])
+        else:
+            return np.array([0.016, 0.039, 0.008, 0.006, 0.932, 0.001])
+    elif terrain in (TERRAIN_SETTLEMENT, TERRAIN_PORT):
+        return np.array([0.472, 0.253, 0.020, 0.025, 0.235, 0.001])
+    elif terrain == TERRAIN_RUIN:
+        return np.array([0.472, 0.253, 0.020, 0.025, 0.235, 0.001])
+    else:
+        if settlement_dist <= 2:
+            return np.array([0.754, 0.162, 0.007, 0.019, 0.058, 0.001])
+        elif settlement_dist <= 5:
+            return np.array([0.841, 0.106, 0.008, 0.013, 0.032, 0.001])
+        else:
+            return np.array([0.945, 0.037, 0.006, 0.004, 0.007, 0.001])
 
 
 def _fill_unobserved_dynamic_cells(
@@ -157,7 +170,13 @@ def _fill_unobserved_dynamic_cells(
     floor: float,
 ):
     h, w, _ = prediction.shape
-    coverage = store.get_coverage_mask(seed_index)
+
+    agg_obs_count = store.aggregated_obs_count
+    if agg_obs_count is not None:
+        coverage = agg_obs_count > 0
+    else:
+        coverage = store.get_coverage_mask(seed_index)
+
     dist_map = _compute_settlement_distance_map(initial_grid)
 
     for y in range(h):
@@ -216,42 +235,8 @@ def _gather_neighbor_distributions(
 def _prior_from_initial_terrain(
     terrain: int, settlement_dist: float, floor: float,
 ) -> np.ndarray:
-    cls = TERRAIN_TO_CLASS.get(terrain, 0)
-
-    if terrain == TERRAIN_FOREST:
-        dist = np.full(NUM_CLASSES, floor)
-        if settlement_dist <= 3:
-            dist[CLASS_FOREST] = 0.60
-            dist[CLASS_EMPTY] = 0.12
-            dist[CLASS_SETTLEMENT] = 0.10
-            dist[CLASS_RUIN] = 0.08
-            dist[CLASS_PORT] = 0.05
-        elif settlement_dist <= 6:
-            dist[CLASS_FOREST] = 0.75
-            dist[CLASS_EMPTY] = 0.10
-            dist[CLASS_SETTLEMENT] = 0.05
-            dist[CLASS_RUIN] = 0.04
-        else:
-            dist[CLASS_FOREST] = 0.88
-            dist[CLASS_EMPTY] = 0.05
-        return dist / dist.sum()
-
-    dist = np.full(NUM_CLASSES, floor)
-    if settlement_dist <= 3:
-        dist[cls] = 0.30
-        dist[CLASS_EMPTY] = 0.20
-        dist[CLASS_SETTLEMENT] = 0.15
-        dist[CLASS_RUIN] = 0.12
-        dist[CLASS_PORT] = 0.08
-        dist[CLASS_FOREST] = 0.08
-    elif settlement_dist <= 6:
-        dist[cls] = 0.45
-        dist[CLASS_EMPTY] = 0.20
-        dist[CLASS_SETTLEMENT] = 0.08
-        dist[CLASS_RUIN] = 0.06
-    else:
-        dist[cls] = 0.60
-        dist[CLASS_EMPTY] = 0.20
+    dist = _gt_calibrated_prior(terrain, settlement_dist)
+    dist = np.maximum(dist, floor)
     return dist / dist.sum()
 
 
@@ -277,13 +262,22 @@ def build_prediction_with_mc(
     if store is not None:
         dist_map = _compute_settlement_distance_map(initial_grid)
 
+        agg_counts = store.aggregated_counts
+        agg_obs = store.aggregated_obs_count
+
         for y in range(h):
             for x in range(w):
                 terrain = initial_grid[y, x]
                 if terrain in (TERRAIN_OCEAN, TERRAIN_MOUNTAIN):
                     continue
 
-                obs_count = store.get_observation_count(seed_index, x, y)
+                if agg_counts is not None and agg_obs is not None:
+                    obs_count = int(agg_obs[y, x])
+                    obs_counts = agg_counts[y, x]
+                else:
+                    obs_count = store.get_observation_count(seed_index, x, y)
+                    obs_counts = store.class_counts[seed_index, y, x]
+
                 if obs_count == 0:
                     continue
 
@@ -291,7 +285,6 @@ def build_prediction_with_mc(
                 adaptive_pseudo = mc_pseudo_count * min(2.0, max(0.3, settlement_d / 5.0))
 
                 mc_alpha = prediction[y, x] * adaptive_pseudo
-                obs_counts = store.class_counts[seed_index, y, x]
                 posterior = mc_alpha + obs_counts
                 prediction[y, x] = posterior / posterior.sum()
 
@@ -300,15 +293,42 @@ def build_prediction_with_mc(
 
 
 def _apply_floor_and_normalize(prediction: np.ndarray, floor: float):
-    max_entropy = np.log(NUM_CLASSES)
-    eps = 1e-10
-    clipped = np.clip(prediction, eps, 1.0)
-    entropy = -np.sum(clipped * np.log(clipped), axis=-1)
-    entropy_ratio = entropy / max_entropy
+    h, w, c = prediction.shape
 
-    adaptive_floor = floor * (1.0 + 0.5 * entropy_ratio)
-    floor_expanded = np.expand_dims(adaptive_floor, axis=-1)
+    prediction[:] = np.maximum(prediction, floor)
 
-    prediction[:] = np.maximum(prediction, floor_expanded)
     sums = prediction.sum(axis=-1, keepdims=True)
     prediction[:] = prediction / sums
+
+    max_probs = prediction.max(axis=-1)
+    needs_cap = max_probs > MAX_DYNAMIC_PROB
+
+    if np.any(needs_cap):
+        for y in range(h):
+            for x in range(w):
+                if not needs_cap[y, x]:
+                    continue
+                _cap_cell_probability(prediction[y, x], MAX_DYNAMIC_PROB, DYNAMIC_FLOOR)
+
+    sums = prediction.sum(axis=-1, keepdims=True)
+    prediction[:] = prediction / sums
+
+
+def _cap_cell_probability(cell: np.ndarray, max_prob: float, min_prob: float):
+    max_idx = np.argmax(cell)
+    if cell[max_idx] <= max_prob:
+        return
+
+    excess = cell[max_idx] - max_prob
+    cell[max_idx] = max_prob
+
+    other_mask = np.ones(len(cell), dtype=bool)
+    other_mask[max_idx] = False
+    other_sum = cell[other_mask].sum()
+
+    if other_sum > 0:
+        cell[other_mask] += excess * (cell[other_mask] / other_sum)
+    else:
+        cell[other_mask] = excess / (len(cell) - 1)
+
+    cell[:] = np.maximum(cell, min_prob)

@@ -84,10 +84,14 @@ def run_observation_phase(
                       f"FAILED - {e}")
                 if "429" in str(e) or "budget" in str(e).lower():
                     print("Query budget exhausted. Moving to prediction phase.")
+                    store.save(round_id)
                     return store
 
         coverage = store.coverage_ratio(seed_idx)
         print(f"Seed {seed_idx}: {coverage:.1%} coverage")
+
+        # Save incrementally after each seed to avoid losing data on timeout/interrupt
+        store.save(round_id)
 
     return store
 
@@ -361,21 +365,47 @@ def main():
 
     # Phase 1: Observe (fast, uses API budget — do this FIRST)
     print("\n--- Observation Phase ---")
+
+    store = None
+    try:
+        store = ObservationStore.load(round_id)
+        print(f"Loaded cached observations ({store.total_observations()} total)")
+        for s in range(num_seeds):
+            print(f"  Seed {s}: {store.coverage_ratio(s):.1%} coverage")
+    except FileNotFoundError:
+        pass
+
     budget = client.get_budget()
     print(f"Budget: {budget['queries_used']}/{budget['queries_max']} used")
 
     remaining = budget["queries_max"] - budget["queries_used"]
     if remaining > 0:
-        store = run_observation_phase(client, round_id, num_seeds, initial_grids, width, height)
-        print(f"\nTotal observations: {store.total_observations()}")
+        new_store = run_observation_phase(client, round_id, num_seeds, initial_grids, width, height)
+
+        if store is not None:
+            store.merge(new_store)
+        else:
+            store = new_store
+
+        save_path = store.save(round_id)
+        print(f"\nObservations saved to {save_path}")
+        print(f"Total observations: {store.total_observations()}")
         for s in range(num_seeds):
             print(f"  Seed {s}: {store.coverage_ratio(s):.1%} coverage")
 
         if args.observe_only:
             print("Observe-only mode — skipping prediction and submission")
             return
+    elif store is not None:
+        print("No new queries available — using cached observations.")
     else:
-        print("No queries remaining — skipping observation phase.")
+        print("No queries remaining and no cached observations.")
+
+    if store is not None:
+        store.aggregate_across_seeds()
+        agg = store.aggregated_obs_count
+        if agg is not None:
+            print(f"Cross-seed aggregation: {int(np.sum(agg > 0))} cells with data")
 
     # Phase 2: Fit params from observations (if available)
     if args.fit_params and store is not None:
@@ -419,7 +449,7 @@ def main():
             detail, num_seeds, width, height,
             mc_runs=args.mc_runs,
             param_noise=noise,
-            params=fitted_params if fitted_params is not None else SimParams(),
+            params=fitted_params if fitted_params is not None else SimParams.gt_tuned(),
             store=store,
         )
 
@@ -436,6 +466,9 @@ def main():
         )
     elif mc_predictions is not None:
         predictions = mc_predictions
+    elif store is not None:
+        print("\n--- Prediction Phase (observations only, no MC) ---")
+        predictions = run_prediction_phase(store, initial_grids, num_seeds)
     else:
         print("\n--- Baseline Predictions (no MC, no observations) ---")
         predictions = build_baseline_predictions(initial_grids)

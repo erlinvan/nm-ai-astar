@@ -67,3 +67,12 @@ class SimParams:
     @classmethod
     def from_dict(cls, d: dict) -> "SimParams":
         return cls(**{k: v for k, v in d.items() if k in cls.__dataclass_fields__})
+
+    @classmethod
+    def gt_tuned(cls) -> "SimParams":
+        return cls(
+            forest_regrowth_prob=0.20,
+            expansion_prob=0.15,
+            expansion_threshold=6.0,
+            reclaim_prob=0.05,
+        )
