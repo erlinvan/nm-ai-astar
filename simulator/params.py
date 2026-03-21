@@ -35,11 +35,16 @@ class SimParams:
     winter_variance: float = 0.15
     winter_food_loss: float = 0.3
     min_population: float = 0.3
+    base_collapse_prob: float = 0.0
+
+    # Food spoilage
+    food_decay: float = 1.0  # 1.0 = no spoilage (default preserves old behavior)
 
     # Environment
     reclaim_prob: float = 0.12
     forest_regrowth_prob: float = 0.08
     plains_regrowth_prob: float = 0.15
+    forest_spread_prob: float = 0.0
 
     def randomize(self, rng: np.random.Generator, scale: float = 0.3) -> "SimParams":
         d = asdict(self)
@@ -50,6 +55,7 @@ class SimParams:
                 new_val = v + noise
                 if k in ("base_raid_prob", "expansion_prob", "conquest_prob",
                          "reclaim_prob", "forest_regrowth_prob", "plains_regrowth_prob",
+                         "forest_spread_prob", "food_decay", "base_collapse_prob",
                          "trade_efficiency", "tech_diffusion_rate"):
                     new_val = float(np.clip(new_val, 0.01, 0.99))
                 elif k in ("port_food_multiplier",):
@@ -71,8 +77,23 @@ class SimParams:
     @classmethod
     def gt_tuned(cls) -> "SimParams":
         return cls(
-            forest_regrowth_prob=0.20,
-            expansion_prob=0.15,
-            expansion_threshold=6.0,
-            reclaim_prob=0.05,
+            expansion_prob=0.30,
+            expansion_threshold=3.5,
+            food_consumption=0.7,
+            growth_rate=0.10,
+            base_raid_prob=0.20,
+            raid_threshold=0.7,
+            pop_damage_fraction=0.30,
+            defense_damage=0.25,
+            loot_fraction=0.35,
+            base_winter_severity=0.6,
+            winter_variance=0.20,
+            winter_food_loss=0.45,
+            min_population=0.5,
+            base_collapse_prob=0.03,
+            food_decay=0.5,
+            reclaim_prob=0.10,
+            forest_regrowth_prob=0.08,
+            plains_regrowth_prob=0.25,
+            forest_spread_prob=0.001,
         )

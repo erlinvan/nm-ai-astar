@@ -134,14 +134,14 @@ def run_prediction_phase(
     initial_grids: list[np.ndarray],
     num_seeds: int,
     mc_predictions=None,
-    mc_pseudo_count: float = 3.0,
+    mc_weight: float = 0.08,
 ) -> list[np.ndarray]:
     predictions = []
     for seed_idx in range(num_seeds):
         if mc_predictions is not None:
             pred = build_prediction_with_mc(
                 seed_idx, store, initial_grids[seed_idx], mc_predictions[seed_idx],
-                mc_pseudo_count=mc_pseudo_count,
+                mc_weight=mc_weight,
             )
         else:
             pred = build_prediction(seed_idx, store, initial_grids[seed_idx])
@@ -313,8 +313,8 @@ def main():
     parser.add_argument("--baseline-only", action="store_true", help="Submit baseline predictions without querying")
     parser.add_argument("--dry-run", action="store_true", help="Build predictions but don't submit")
     parser.add_argument("--observe-only", action="store_true", help="Only observe, don't submit")
-    parser.add_argument("--mc-runs", type=int, default=400, help="Monte Carlo runs per seed (0 to disable)")
-    parser.add_argument("--mc-pseudo-count", type=float, default=3.0, help="MC pseudo count for observation blending")
+    parser.add_argument("--mc-runs", type=int, default=15, help="Monte Carlo runs per seed (0 to disable)")
+    parser.add_argument("--mc-weight", type=float, default=0.08, help="MC blend weight (0=GT-only, 1=MC-only)")
     parser.add_argument("--param-noise", type=float, default=0.15, help="Parameter randomization noise scale")
     parser.add_argument("--fit-params", action="store_true", help="Run CMA-ES parameter fitting after observations")
     parser.add_argument("--fit-gens", type=int, default=25, help="CMA-ES generations")
@@ -456,13 +456,10 @@ def main():
     # Phase 4: Build final predictions
     if store is not None and mc_predictions is not None:
         print("\n--- Prediction Phase (blending MC + observations) ---")
-        effective_pseudo_count = args.mc_pseudo_count
-        if fitted_params is not None:
-            effective_pseudo_count = max(args.mc_pseudo_count, 10.0)
-            print(f"  Using elevated mc_pseudo_count={effective_pseudo_count} (fitted params)")
+        effective_mc_weight = args.mc_weight
         predictions = run_prediction_phase(
             store, initial_grids, num_seeds, mc_predictions,
-            mc_pseudo_count=effective_pseudo_count,
+            mc_weight=effective_mc_weight,
         )
     elif mc_predictions is not None:
         predictions = mc_predictions

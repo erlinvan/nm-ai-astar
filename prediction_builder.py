@@ -251,42 +251,23 @@ def build_prediction_with_mc(
     store: Optional[ObservationStore],
     initial_grid: np.ndarray,
     mc_prediction: np.ndarray,
-    mc_pseudo_count: float = 3.0,
+    mc_weight: float = 0.08,
     floor: float = PROBABILITY_FLOOR,
 ) -> np.ndarray:
     h, w = initial_grid.shape
-    prediction = mc_prediction.copy()
+    prediction = build_prediction(seed_index, store, initial_grid, floor) if store is not None else np.full((h, w, NUM_CLASSES), 1.0 / NUM_CLASSES)
 
-    _fill_static_cells(prediction, initial_grid, floor)
+    dist_map = _compute_settlement_distance_map(initial_grid)
 
-    if store is not None:
-        dist_map = _compute_settlement_distance_map(initial_grid)
+    for y in range(h):
+        for x in range(w):
+            terrain = initial_grid[y, x]
+            if terrain in (TERRAIN_OCEAN, TERRAIN_MOUNTAIN):
+                continue
 
-        agg_counts = store.aggregated_counts
-        agg_obs = store.aggregated_obs_count
-
-        for y in range(h):
-            for x in range(w):
-                terrain = initial_grid[y, x]
-                if terrain in (TERRAIN_OCEAN, TERRAIN_MOUNTAIN):
-                    continue
-
-                if agg_counts is not None and agg_obs is not None:
-                    obs_count = int(agg_obs[y, x])
-                    obs_counts = agg_counts[y, x]
-                else:
-                    obs_count = store.get_observation_count(seed_index, x, y)
-                    obs_counts = store.class_counts[seed_index, y, x]
-
-                if obs_count == 0:
-                    continue
-
-                settlement_d = dist_map[y, x]
-                adaptive_pseudo = mc_pseudo_count * min(2.0, max(0.3, settlement_d / 5.0))
-
-                mc_alpha = prediction[y, x] * adaptive_pseudo
-                posterior = mc_alpha + obs_counts
-                prediction[y, x] = posterior / posterior.sum()
+            settlement_d = dist_map[y, x]
+            w_mc = mc_weight * min(1.0, settlement_d / 8.0 + 0.3)
+            prediction[y, x] = (1.0 - w_mc) * prediction[y, x] + w_mc * mc_prediction[y, x]
 
     _apply_floor_and_normalize(prediction, floor)
     return prediction

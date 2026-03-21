@@ -58,7 +58,7 @@ def phase_growth(world: World, params: SimParams, rng: np.random.Generator) -> N
 
         food_needed = s.population * params.food_consumption
         food_surplus = food_production - food_needed
-        s.food += food_production
+        s.food = food_production
 
         if food_surplus > 0:
             s.population += params.growth_rate * food_surplus
@@ -202,6 +202,8 @@ def phase_winter(world: World, params: SimParams, rng: np.random.Generator) -> N
         s.food -= severity * s.population * params.winter_food_loss
         if s.food <= 0 or s.population < params.min_population:
             collapse_list.append(s)
+        elif rng.random() < params.base_collapse_prob:
+            collapse_list.append(s)
 
     for s in collapse_list:
         if not s.alive:
@@ -262,3 +264,25 @@ def phase_environment(world: World, params: SimParams, rng: np.random.Generator)
             world.set_terrain(rx, ry, TERRAIN_FOREST)
         elif rng.random() < params.plains_regrowth_prob:
             world.set_terrain(rx, ry, TERRAIN_PLAINS)
+
+    if params.forest_spread_prob > 0:
+        _spread_forest(world, params, rng)
+
+
+def _spread_forest(world: World, params: SimParams, rng: np.random.Generator) -> None:
+    candidates = []
+    for y in range(world.height):
+        for x in range(world.width):
+            t = world.get_terrain(x, y)
+            if t not in (TERRAIN_PLAINS, TERRAIN_EMPTY):
+                continue
+            if (x, y) in world.settlements:
+                continue
+            for nx, ny in world.get_neighbors(x, y, radius=1):
+                if world.get_terrain(nx, ny) == TERRAIN_FOREST:
+                    candidates.append((x, y))
+                    break
+
+    for cx, cy in candidates:
+        if rng.random() < params.forest_spread_prob:
+            world.set_terrain(cx, cy, TERRAIN_FOREST)
