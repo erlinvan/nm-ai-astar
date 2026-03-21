@@ -178,20 +178,15 @@ def allocate_queries(
             dynamism.append(score)
 
         total_dynamism = sum(dynamism) or 1.0
-        per_seed_queries = []
-        budget_left = total_budget
+        per_seed_queries = [queries_per_seed_base] * num_seeds
+        extras = total_budget - queries_per_seed_base * num_seeds
 
-        for i in range(num_seeds):
-            weight = dynamism[i] / total_dynamism
-            alloc = max(queries_per_seed_base, int(weight * total_budget))
-            alloc = min(alloc, budget_left)
-            per_seed_queries.append(alloc)
-            budget_left -= alloc
-
-        while budget_left > 0:
-            best_idx = max(range(num_seeds), key=lambda i: dynamism[i])
-            per_seed_queries[best_idx] += 1
-            budget_left -= 1
+        if extras > 0:
+            weights = [d / total_dynamism for d in dynamism]
+            for _ in range(extras):
+                best_idx = max(range(num_seeds), key=lambda i: weights[i])
+                per_seed_queries[best_idx] += 1
+                weights[best_idx] *= 0.5  # decay to spread extras
 
         allocation = {
             "strategy": "adaptive_overlap",

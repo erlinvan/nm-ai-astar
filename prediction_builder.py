@@ -306,7 +306,7 @@ def _apply_floor_and_normalize(prediction: np.ndarray, floor: float):
     entropy = -np.sum(clipped * np.log(clipped), axis=-1)
     entropy_ratio = entropy / max_entropy
 
-    adaptive_floor = floor * (1.0 - 0.5 * entropy_ratio)
+    adaptive_floor = floor * (1.0 + 0.5 * entropy_ratio)
     floor_expanded = np.expand_dims(adaptive_floor, axis=-1)
 
     prediction[:] = np.maximum(prediction, floor_expanded)
