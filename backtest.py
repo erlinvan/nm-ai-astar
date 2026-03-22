@@ -6,7 +6,7 @@ import numpy as np
 
 from api_client import AstarIslandClient
 from observation_store import ObservationStore
-from prediction_builder import build_prediction, build_prediction_with_mc, _apply_floor_and_normalize
+from prediction_builder import build_prediction, build_prediction_with_mc, _apply_floor_and_normalize, compute_round_priors
 from utils import score_prediction, compute_kl_divergence, compute_entropy
 from config import NUM_CLASSES, PROBABILITY_FLOOR, CLASS_NAMES
 from main import _print_per_class_analysis, _print_per_distance_analysis
@@ -17,6 +17,7 @@ KNOWN_ROUNDS: dict[str, str] = {
     "13": "7b4bda99-6165-4221-97cc-27880f5e6d95",
     "14": "d0a2c894-2162-4d49-86cf-435b9013f3b8",
     "15": "cc5442dd-bc5d-418b-911b-7eb960cb0390",
+    "17": "3eb0c25d-28fa-48ca-b8e1-fc249e3918e9",
 }
 
 GT_CACHE_DIR = Path(__file__).parent / ".gt_cache"
@@ -145,10 +146,11 @@ def backtest_round(
     ]
 
     obs_store: Optional[ObservationStore] = None
+    round_priors = None
     if has_cached_observations(round_id):
         try:
             obs_store = ObservationStore.load(round_id)
-            obs_store.aggregate_across_seeds()
+            round_priors = compute_round_priors(obs_store, initial_grids_from_detail, num_seeds)
         except Exception as e:
             print(f"  [WARNING] Could not load observations: {e}")
 
@@ -174,7 +176,7 @@ def backtest_round(
         regen_pred: Optional[np.ndarray] = None
         if obs_store is not None and gt is not None:
             try:
-                regen_pred = build_prediction(seed_idx, obs_store, initial_grid)
+                regen_pred = build_prediction(seed_idx, obs_store, initial_grid, round_priors=round_priors)
                 regen_score = score_prediction(gt, regen_pred)
             except Exception as e:
                 print(f"  [WARNING] Could not regenerate prediction for seed {seed_idx}: {e}")

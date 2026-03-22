@@ -19,6 +19,7 @@ from query_strategy import generate_overlapping_viewports, allocate_queries
 from observation_store import ObservationStore
 from prediction_builder import (
     build_prediction, build_prediction_with_mc, _apply_floor_and_normalize,
+    compute_round_priors, RoundPriors,
 )
 from submission import submit_all_predictions, _validate_prediction
 from monte_carlo import run_monte_carlo
@@ -135,16 +136,17 @@ def run_prediction_phase(
     num_seeds: int,
     mc_predictions=None,
     mc_weight: float = 0.08,
+    round_priors: Optional[RoundPriors] = None,
 ) -> list[np.ndarray]:
     predictions = []
     for seed_idx in range(num_seeds):
         if mc_predictions is not None:
             pred = build_prediction_with_mc(
                 seed_idx, store, initial_grids[seed_idx], mc_predictions[seed_idx],
-                mc_weight=mc_weight,
+                mc_weight=mc_weight, round_priors=round_priors,
             )
         else:
-            pred = build_prediction(seed_idx, store, initial_grids[seed_idx])
+            pred = build_prediction(seed_idx, store, initial_grids[seed_idx], round_priors=round_priors)
         _validate_prediction(pred)
         predictions.append(pred)
         coverage = store.coverage_ratio(seed_idx)
@@ -402,10 +404,10 @@ def main():
         print("No queries remaining and no cached observations.")
 
     if store is not None:
-        store.aggregate_across_seeds()
-        agg = store.aggregated_obs_count
-        if agg is not None:
-            print(f"Cross-seed aggregation: {int(np.sum(agg > 0))} cells with data")
+        round_priors = compute_round_priors(store, initial_grids, num_seeds)
+        print(f"Observation-derived priors: {len(round_priors)} terrain/distance buckets")
+    else:
+        round_priors = None
 
     # Phase 2: Fit params from observations (if available)
     if args.fit_params and store is not None:
@@ -459,13 +461,13 @@ def main():
         effective_mc_weight = args.mc_weight
         predictions = run_prediction_phase(
             store, initial_grids, num_seeds, mc_predictions,
-            mc_weight=effective_mc_weight,
+            mc_weight=effective_mc_weight, round_priors=round_priors,
         )
     elif mc_predictions is not None:
         predictions = mc_predictions
     elif store is not None:
         print("\n--- Prediction Phase (observations only, no MC) ---")
-        predictions = run_prediction_phase(store, initial_grids, num_seeds)
+        predictions = run_prediction_phase(store, initial_grids, num_seeds, round_priors=round_priors)
     else:
         print("\n--- Baseline Predictions (no MC, no observations) ---")
         predictions = build_baseline_predictions(initial_grids)

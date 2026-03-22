@@ -52,9 +52,9 @@ TERRAIN_TO_CLASS = {
 STATIC_TERRAINS = {TERRAIN_OCEAN, TERRAIN_MOUNTAIN}
 
 # Prediction smoothing
-PROBABILITY_FLOOR = 0.01  # Minimum probability per class to avoid infinite KL
+PROBABILITY_FLOOR = 0.001  # Minimum probability per class to avoid infinite KL
 HIGH_CONFIDENCE = 0.94     # Probability for observed class (leaves 0.012 for each of 5 others)
-STATIC_CONFIDENCE = 0.95   # Probability for static cells
+STATIC_CONFIDENCE = 0.99   # Probability for static cells
 
 # Terrain class names for display
 CLASS_NAMES = {
